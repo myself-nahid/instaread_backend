@@ -5,9 +5,8 @@ from typing import List
 from app import crud, models, schemas
 from app.db.session import get_db
 from app.services.book_scanner import book_scanner
-
-# For a real app, you would have a dependency to get the current user from the token
-# from app.api.deps import get_current_active_user
+from app.schemas.book import BookScan, BookScanCreate
+from app.models.user import User
 
 router = APIRouter()
 
@@ -15,15 +14,15 @@ router = APIRouter()
 async def get_mock_current_user():
     # In a real app, this would decode the JWT token.
     # Here we just return a mock user object.
-    return models.User(id=1, email="user@example.com")
+    return User(id=1, email="user@example.com")
 
 
-@router.post("/scan", response_model=schemas.BookScan)
+@router.post("/scan", response_model=BookScan)
 async def scan_book(
     *,
     db: AsyncSession = Depends(get_db),
     isbn: str,
-    current_user: models.User = Depends(get_mock_current_user) # Replace with real dependency
+    current_user: User = Depends(get_mock_current_user) # Replace with real dependency
 ):
     """
     Scan a new book by its ISBN.
@@ -37,7 +36,7 @@ async def scan_book(
     analysis_result = await book_scanner.analyze_content(book_data)
     
     # 3. Create BookScan entry in the database
-    book_scan_in = schemas.BookScanCreate(
+    book_scan_in = BookScanCreate(
         isbn=isbn,
         title=book_data.get("title"),
         author=book_data.get("author")
@@ -55,12 +54,12 @@ async def scan_book(
     return created_scan
 
 
-@router.get("/history", response_model=List[schemas.BookScan])
+@router.get("/history", response_model=List[BookScan])
 async def read_scan_history(
     db: AsyncSession = Depends(get_db),
     skip: int = 0,
     limit: int = 100,
-    current_user: models.User = Depends(get_mock_current_user) # Replace with real dependency
+    current_user: User = Depends(get_mock_current_user) 
 ):
     """
     Retrieve the current user's scan history.

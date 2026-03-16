@@ -3,15 +3,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import crud, models, schemas
 from app.db.session import get_db
-# Add a dependency for getting the current user later
+from app.schemas.user import UserCreate, UserUpdate
 
 router = APIRouter()
 
-@router.post("/", response_model=schemas.User)
+@router.post("/", response_model=UserCreate)
 async def create_user(
     *,
     db: AsyncSession = Depends(get_db),
-    user_in: schemas.UserCreate,
+    user_in: UserCreate,
 ):
     user = await crud.user.get_by_email(db, email=user_in.email)
     if user:
