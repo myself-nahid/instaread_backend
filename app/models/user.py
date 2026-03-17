@@ -7,6 +7,7 @@ class User(Base):
     full_name = Column(String, index=True, nullable=True)
     email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
+    profile_picture_url = Column(String, nullable=True)
     
     # OTP and Verification Fields
     is_verified = Column(Boolean, default=False)
