@@ -7,6 +7,7 @@ from jose import jwt, JWTError
 
 from app import models
 from app.schemas import auth as auth_schemas
+from app.models.user import User
 from app.core import security
 from app.core.config import settings
 from app.db.session import get_db
@@ -34,16 +35,16 @@ async def send_email_mock(email: str, otp: str, context: str):
 # 1. SIGN UP API
 @router.post("/signup")
 async def signup(payload: auth_schemas.SignupRequest, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(models.User).filter(models.User.email == payload.email))
+    result = await db.execute(select(User).filter(User.email == payload.email))
     user = result.scalars().first()
     
     if user:
         return standard_response(400, "User with this email already exists.")
     
-    otp = security.generate_4_digit_otp()
+    otp = security.generate_6_digit_otp()
     otp_expiry = datetime.utcnow() + timedelta(minutes=10) # OTP valid for 10 mins
     
-    new_user = models.User(
+    new_user = User(
         full_name=payload.name,
         email=payload.email,
         hashed_password=security.get_password_hash(payload.password),
@@ -94,7 +95,7 @@ async def resend_otp(payload: auth_schemas.ResendOTPRequest, db: AsyncSession = 
     if not user:
         return standard_response(404, "User not found.")
         
-    new_otp = security.generate_4_digit_otp()
+    new_otp = security.generate_6_digit_otp()
     user.otp = new_otp
     user.otp_expire_at = datetime.utcnow() + timedelta(minutes=10)
     await db.commit()
@@ -178,7 +179,7 @@ async def forgot_password(payload: auth_schemas.ForgotPasswordRequest, db: Async
         # Return success even if user doesn't exist to prevent email enumeration attacks
         return standard_response(200, "If an account exists with that email, an OTP has been sent.")
         
-    otp = security.generate_4_digit_otp()
+    otp = security.generate_6_digit_otp()
     user.otp = otp
     user.otp_expire_at = datetime.utcnow() + timedelta(minutes=15)
     await db.commit()
