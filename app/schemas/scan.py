@@ -1,0 +1,4 @@
+from pydantic import BaseModel, Field
+
+class ManualScanRequest(BaseModel):
+    isbn: str = Field(..., min_length=10, max_length=13, description="10 or 13 digit ISBN barcode")
