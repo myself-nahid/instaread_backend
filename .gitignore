@@ -70,3 +70,4 @@ uploads/
 
 # Ignore Alembic migration versions
 alembic/versions/*
+alembic/versions
