@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func, desc, Date, cast
 from datetime import datetime, timedelta
+from app.schemas import policy as policy_schemas
 
 from app import models
 from app.api import deps
@@ -530,3 +531,89 @@ async def get_transactions_management(
     }
 
     return standard_response(200, "Transaction data fetched successfully", data)
+
+# 8. PRIVACY & POLICY MANAGEMENT (CRUD)
+@router.post("/policies", status_code=201)
+async def create_policy(
+    payload: policy_schemas.PolicyCreate,
+    current_admin: models.User = Depends(deps.get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Admin: Creates a new policy document."""
+    new_policy = models.Policy(title=payload.title, description=payload.description)
+    db.add(new_policy)
+    await db.commit()
+    await db.refresh(new_policy)
+    return standard_response(201, "Policy created successfully", {"id": new_policy.id, "title": new_policy.title})
+
+@router.get("/policies")
+async def get_all_policies(
+    current_admin: models.User = Depends(deps.get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Admin: Retrieves a list of all policies."""
+    result = await db.execute(select(models.Policy).order_by(models.Policy.id))
+    policies = result.scalars().all()
+    
+    policy_list = [{"id": p.id, "title": p.title, "description": p.description} for p in policies]
+    
+    return standard_response(200, "Policies fetched successfully", {"policies": policy_list})
+
+@router.get("/policies/{policy_id}")
+async def get_policy(
+    policy_id: int,
+    current_admin: models.User = Depends(deps.get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Admin: Retrieves a single policy by its ID."""
+    result = await db.execute(select(models.Policy).filter(models.Policy.id == policy_id))
+    policy = result.scalars().first()
+    
+    if not policy:
+        return standard_response(404, "Policy not found.")
+        
+    return standard_response(200, "Policy fetched successfully", {
+        "id": policy.id,
+        "title": policy.title,
+        "description": policy.description
+    })
+
+@router.put("/policies/{policy_id}")
+async def update_policy(
+    policy_id: int,
+    payload: policy_schemas.PolicyUpdate,
+    current_admin: models.User = Depends(deps.get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Admin: Updates an existing policy's title and/or description."""
+    result = await db.execute(select(models.Policy).filter(models.Policy.id == policy_id))
+    policy = result.scalars().first()
+
+    if not policy:
+        return standard_response(404, "Policy not found.")
+        
+    if payload.title:
+        policy.title = payload.title
+    if payload.description:
+        policy.description = payload.description
+        
+    await db.commit()
+    return standard_response(200, f"Policy ID {policy_id} updated successfully.")
+
+@router.delete("/policies/{policy_id}")
+async def delete_policy(
+    policy_id: int,
+    current_admin: models.User = Depends(deps.get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Admin: Deletes a policy."""
+    result = await db.execute(select(models.Policy).filter(models.Policy.id == policy_id))
+    policy = result.scalars().first()
+
+    if not policy:
+        return standard_response(404, "Policy not found.")
+        
+    await db.delete(policy)
+    await db.commit()
+    
+    return standard_response(200, f"Policy ID {policy_id} has been deleted successfully.")
