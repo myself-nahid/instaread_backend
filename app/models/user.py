@@ -15,6 +15,7 @@ class User(Base):
     otp_expire_at = Column(DateTime(timezone=True), nullable=True)
     
     join_date = Column(DateTime(timezone=True), server_default=func.now())
+    last_active = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     subscription_plan = Column(String, default="free")
     is_active = Column(Boolean, default=True)
     is_superuser = Column(Boolean, default=False)

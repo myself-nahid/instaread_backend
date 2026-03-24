@@ -431,3 +431,102 @@ async def delete_user(
     await db.commit()
     
     return standard_response(200, f"User {user_to_delete.email} has been deleted successfully.")
+
+# 7. TRANSACTION MANAGEMENT 
+@router.get("/transactions")
+async def get_transactions_management(
+    search: Optional[str] = Query(None, description="Search by user name, email, or ISBN in their scans"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(10, ge=1, le=100),
+    current_admin: models.User = Depends(deps.get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Fetches aggregated metrics and a paginated list of user transactions."""
+    
+    # 1. SUMMARY METRICS 
+    total_earnings_result = await db.execute(select(func.sum(models.Transaction.amount)))
+    total_subscriptions_result = await db.execute(select(func.count(models.User.id)).filter(models.User.subscription_plan != 'free'))
+    active_users_result = await db.execute(select(func.count(models.User.id)).filter(models.User.is_active == True))
+
+    summary_metrics = {
+        "total_earnings": total_earnings_result.scalar() or 0.0,
+        "total_subscriptions": total_subscriptions_result.scalar() or 0,
+        "active_users": active_users_result.scalar() or 0,
+    }
+
+    # 2. MAIN PAGINATED TRANSACTION LIST
+
+    # Subquery to count scans for each user
+    scan_counts_subquery = (
+        select(models.BookScan.owner_id, func.count(models.BookScan.id).label('total_user_scans'))
+        .group_by(models.BookScan.owner_id).subquery()
+    )
+    
+    # Subquery to find the most recent transaction provider for each user
+    latest_transaction_subquery = (
+        select(
+            models.Transaction.user_id,
+            models.Transaction.provider
+        )
+        .distinct(models.Transaction.user_id)
+        .order_by(models.Transaction.user_id, desc(models.Transaction.transaction_date))
+        .subquery()
+    )
+
+    main_query = (
+        select(
+            models.User,
+            func.coalesce(scan_counts_subquery.c.total_user_scans, 0).label('total_scans'),
+            latest_transaction_subquery.c.provider.label('transaction_provider')
+        )
+        .outerjoin(scan_counts_subquery, models.User.id == scan_counts_subquery.c.owner_id)
+        .outerjoin(latest_transaction_subquery, models.User.id == latest_transaction_subquery.c.user_id)
+    )
+
+    # Apply search filter
+    if search:
+        main_query = main_query.filter(
+            or_(
+                models.User.full_name.ilike(f"%{search}%"),
+                models.User.email.ilike(f"%{search}%")
+            )
+        )
+
+    # Get total count for pagination
+    count_query = main_query.with_only_columns(func.count(models.User.id))
+    total_items_result = await db.execute(count_query)
+    total_items = total_items_result.scalar() or 0
+
+    # Apply sorting and pagination
+    offset = (page - 1) * limit
+    main_query = main_query.order_by(desc(models.User.last_active)).offset(offset).limit(limit)
+
+    query_result = await db.execute(main_query)
+    all_rows = query_result.all()
+
+    transaction_list = []
+    for row in all_rows:
+        user_record, total_user_scans, provider = row
+        transaction_list.append({
+            "user_id": user_record.id,
+            "name": user_record.full_name,
+            "email": user_record.email,
+            "profile_picture_url": user_record.profile_picture_url,
+            "join_date": user_record.join_date.strftime("%-m/%-d/%Y"),
+            "total_scans": total_user_scans,
+            "last_active": user_record.last_active.strftime("%-m/%-d/%Y"),
+            "transaction_provider": provider or "N/A"
+        })
+
+    data = {
+        "summary_metrics": summary_metrics,
+        "pagination": {
+            "total_items": total_items,
+            "total_pages": (total_items + limit - 1) // limit,
+            "current_page": page,
+            "limit": limit
+        },
+        "transactions": transaction_list
+    }
+
+    return standard_response(200, "Transaction data fetched successfully", data)
