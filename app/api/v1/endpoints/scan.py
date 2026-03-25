@@ -36,18 +36,24 @@ async def check_scan_limits(current_user: models.User, db: AsyncSession):
                 detail="You've reached your 100 free scans. Upgrade to continue scanning."
             )
 
-async def save_scan_to_db(user_id: int, ai_data: dict, db: AsyncSession):
-    """Saves the AI result to the database."""
+async def save_scan_to_db(user_id: int, ai_data: dict, db: AsyncSession, original_isbn: str = None):
+    """Saves the AI result to the database safely without crashing on missing keys."""
+    
+    print("--- AI RESPONSE RECEIVED ---")
+    print(ai_data)
+    print("----------------------------")
+
     new_scan = models.BookScan(
         owner_id=user_id,
-        isbn=ai_data["isbn"],
-        title=ai_data["title"],
-        author=ai_data["author"],
-        cover_image_url=ai_data["cover_image_url"],
-        rating=ai_data["rating"],
-        rating_score=ai_data["rating_score"],
-        recommended_age=ai_data["recommended_age"],
-        ai_insights=ai_data["ai_insights"]
+        # Use .get() for everything. If 'isbn' is missing from AI, use the one the user typed!
+        isbn=ai_data.get("isbn") or original_isbn or "Unknown",
+        title=ai_data.get("title", "Unknown Title"),
+        author=ai_data.get("author", "Unknown Author"),
+        cover_image_url=ai_data.get("cover_image_url"),
+        rating=ai_data.get("rating", "Pending"),
+        rating_score=ai_data.get("rating_score"),
+        recommended_age=ai_data.get("recommended_age", "N/A"),
+        ai_insights=ai_data.get("ai_insights", {})
     )
     db.add(new_scan)
     await db.commit()
@@ -67,11 +73,8 @@ async def scan_barcode_image(
     # 2. Read image bytes
     image_bytes = await file.read()
     
-    # 3. Send to AI Developer's Service
     ai_result = await ai_client.analyze_barcode_image(image_bytes)
-    
-    # 4. Save to Database
-    saved_scan = await save_scan_to_db(current_user.id, ai_result, db)
+    saved_scan = await save_scan_to_db(current_user.id, ai_result, db, original_isbn="Scanned Barcode")
     
     # 5. Return structured data to the mobile app
     return standard_response(200, "Book successfully analyzed.", {
@@ -89,11 +92,8 @@ async def scan_manual_isbn(
     # 1. Check Limits First
     await check_scan_limits(current_user, db)
     
-    # 2. Send ISBN to AI Developer's Service
     ai_result = await ai_client.analyze_manual_isbn(payload.isbn)
-    
-    # 3. Save to Database
-    saved_scan = await save_scan_to_db(current_user.id, ai_result, db)
+    saved_scan = await save_scan_to_db(current_user.id, ai_result, db, original_isbn=payload.isbn)
     
     # 4. Return structured data
     return standard_response(200, "Book successfully analyzed.", {
