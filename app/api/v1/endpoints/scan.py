@@ -37,27 +37,47 @@ async def check_scan_limits(current_user: models.User, db: AsyncSession):
             )
 
 async def save_scan_to_db(user_id: int, ai_data: dict, db: AsyncSession, original_isbn: str = None):
-    """Saves the AI result to the database safely without crashing on missing keys."""
+    """Saves the AI result to the database by safely mapping the AI Developer's specific JSON structure."""
+
+    print("AI Data Received:", ai_data)  # Debugging log to see the exact structure from AI
     
-    print("--- AI RESPONSE RECEIVED ---")
-    print(ai_data)
-    print("----------------------------")
+    # Safely extract the nested "overall_score" dictionary
+    # If the AI fails to send it, we default to an empty dictionary {} so the app doesn't crash
+    overall_score = ai_data.get("overall_score", {})
 
     new_scan = models.BookScan(
         owner_id=user_id,
-        # Use .get() for everything. If 'isbn' is missing from AI, use the one the user typed!
-        isbn=ai_data.get("isbn") or original_isbn or "Unknown",
+        
+        # The AI didn't return an ISBN in their JSON! 
+        # So we MUST use the 'original_isbn' that the user typed into the app.
+        isbn=original_isbn or "Unknown",
+        
+        # Exact match
         title=ai_data.get("title", "Unknown Title"),
-        author=ai_data.get("author", "Unknown Author"),
-        cover_image_url=ai_data.get("cover_image_url"),
-        rating=ai_data.get("rating", "Pending"),
-        rating_score=ai_data.get("rating_score"),
-        recommended_age=ai_data.get("recommended_age", "N/A"),
+        
+        # Map AI's "authors" to DB's "author"
+        author=ai_data.get("authors", "Unknown Author"),
+        
+        # Map AI's "cover_image" to DB's "cover_image_url"
+        cover_image_url=ai_data.get("cover_image"),
+        
+        # Map AI's nested "text" (e.g., "Caution") to DB's "rating"
+        rating=overall_score.get("text", "Pending"),
+        
+        # Map AI's nested "percentage" (e.g., 59) to DB's "rating_score"
+        rating_score=overall_score.get("percentage"),
+        
+        # Map AI's "age_recommendation" to DB's "recommended_age"
+        recommended_age=ai_data.get("age_recommendation", "N/A"),
+        
+        # The insights block matches perfectly
         ai_insights=ai_data.get("ai_insights", {})
     )
+    
     db.add(new_scan)
     await db.commit()
     await db.refresh(new_scan)
+    
     return new_scan
 
 # 1. SCAN BARCODE IMAGE (Camera Upload)
