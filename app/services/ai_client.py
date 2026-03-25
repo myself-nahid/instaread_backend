@@ -6,6 +6,7 @@ class AIAnalyzerClient:
     def __init__(self):
         # We strip quotes just in case they were accidentally loaded from the .env file
         self.ai_service_url = settings.AI_SERVICE_URL.strip('"').strip("'")
+        self.ai_service_url_image = settings.AI_SERVICE_URL_IMAGE.strip('"').strip("'")
 
     async def analyze_barcode_image(self, image_bytes: bytes) -> dict:
         """Sends the real image file to the AI developer's service."""
@@ -14,7 +15,7 @@ class AIAnalyzerClient:
                 files = {'file': ('barcode.jpg', image_bytes, 'image/jpeg')}
                 
                 # Make the REAL request to the exact Ngrok URL
-                response = await client.post(self.ai_service_url, files=files)
+                response = await client.post(self.ai_service_url_image, files=files)
                 
                 if response.status_code != 200:
                     raise HTTPException(

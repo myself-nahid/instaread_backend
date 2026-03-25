@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func
 
-from app import models
+from app import db, models
 from app.api import deps
 from app.db.session import get_db
 from app.schemas.scan import ManualScanRequest
@@ -39,18 +39,20 @@ async def check_scan_limits(current_user: models.User, db: AsyncSession):
 async def save_scan_to_db(user_id: int, ai_data: dict, db: AsyncSession, original_isbn: str = None):
     """Saves the AI result to the database by safely mapping the AI Developer's specific JSON structure."""
 
-    print("AI Data Received:", ai_data)  # Debugging log to see the exact structure from AI
+    print("AI Data Received:", ai_data)  
     
-    # Safely extract the nested "overall_score" dictionary
-    # If the AI fails to send it, we default to an empty dictionary {} so the app doesn't crash
     overall_score = ai_data.get("overall_score", {})
+    raw_isbn = ai_data.get("detected_isbn") or ai_data.get("isbn") or original_isbn or "Unknown"
+    
+    # Remove any accidental spaces, and slice it [:13]
+    safe_isbn = str(raw_isbn).strip()[:13]
 
     new_scan = models.BookScan(
         owner_id=user_id,
         
         # The AI didn't return an ISBN in their JSON! 
         # So we MUST use the 'original_isbn' that the user typed into the app.
-        isbn=original_isbn or "Unknown",
+        isbn=safe_isbn,
         
         # Exact match
         title=ai_data.get("title", "Unknown Title"),
@@ -94,7 +96,7 @@ async def scan_barcode_image(
     image_bytes = await file.read()
     
     ai_result = await ai_client.analyze_barcode_image(image_bytes)
-    saved_scan = await save_scan_to_db(current_user.id, ai_result, db, original_isbn="Scanned Barcode")
+    saved_scan = await save_scan_to_db(current_user.id, ai_result, db, original_isbn="Unknown")
     
     # 5. Return structured data to the mobile app
     return standard_response(200, "Book successfully analyzed.", {
