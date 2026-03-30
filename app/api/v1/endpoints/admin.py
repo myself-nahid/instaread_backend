@@ -32,63 +32,141 @@ async def get_dashboard_overview(
 ):
     """
     Fetches aggregated data for the Admin Dashboard Overview.
-    Includes summary metrics, 7-day chart data, and top scanned books.
+    Includes summary metrics, 7-day chart data, and top scanned books with trends.
     """
-    
-    # 1. SUMMARY METRICS
-    
-    # Active Users
-    active_users_result = await db.execute(select(func.count(models.User.id)).filter(models.User.is_active == True))
-    total_active_users = active_users_result.scalar() or 0
-    
-    # Total Scans
-    total_scans_result = await db.execute(select(func.count(models.BookScan.id)))
-    total_scans = total_scans_result.scalar() or 0
-    
-    # Total Earnings (Mocked based on premium users for now, until transaction table is built)
-    premium_users_result = await db.execute(select(func.count(models.User.id)).filter(models.User.subscription_plan != "free"))
-    premium_users = premium_users_result.scalar() or 0
-    mock_earnings = premium_users * 2.99 # Assuming monthly plan price
 
-    # 2. CHART DATA (Last 7 Days Activity)
-    today = datetime.utcnow().date()
-    seven_days_ago = today - timedelta(days=6) # 7 days inclusive
-    
-    # Query to group scans by date and count unique users and total scans per day
+    # 1. TIME RANGES
+    now = datetime.utcnow()
+    today = now.date()
+
+    current_start = today - timedelta(days=6)
+    previous_start = today - timedelta(days=13)
+    previous_end = today - timedelta(days=7)
+
+    # 2. TREND FUNCTION (3 DIRECTIONS)
+    def calculate_trend_with_direction(current, previous):
+        if previous == 0:
+            if current > 0:
+                return 100, "up"
+            return 0, "neutral"
+
+        percentage = round(((current - previous) / previous) * 100, 2)
+
+        if percentage > 0:
+            direction = "up"
+        elif percentage < 0:
+            direction = "down"
+        else:
+            direction = "neutral"
+
+        return percentage, direction
+
+    # 3. ACTIVE USERS
+    current_active_users_result = await db.execute(
+        select(func.count(models.User.id)).filter(
+            models.User.is_active == True,
+            models.User.last_active >= current_start
+        )
+    )
+
+    previous_active_users_result = await db.execute(
+        select(func.count(models.User.id)).filter(
+            models.User.is_active == True,
+            models.User.last_active.between(previous_start, previous_end)
+        )
+    )
+
+    current_active_users = current_active_users_result.scalar() or 0
+    previous_active_users = previous_active_users_result.scalar() or 0
+
+    active_trend, active_direction = calculate_trend_with_direction(
+        current_active_users, previous_active_users
+    )
+
+    # 4. TOTAL SCANS
+    current_scans_result = await db.execute(
+        select(func.count(models.BookScan.id)).filter(
+            models.BookScan.scan_date >= current_start
+        )
+    )
+
+    previous_scans_result = await db.execute(
+        select(func.count(models.BookScan.id)).filter(
+            models.BookScan.scan_date.between(previous_start, previous_end)
+        )
+    )
+
+    current_scans = current_scans_result.scalar() or 0
+    previous_scans = previous_scans_result.scalar() or 0
+
+    scans_trend, scans_direction = calculate_trend_with_direction(
+        current_scans, previous_scans
+    )
+
+    # 5. TOTAL EARNINGS (MOCK BASED ON PREMIUM USERS)
+    current_premium_users_result = await db.execute(
+        select(func.count(models.User.id)).filter(
+            models.User.subscription_plan != "free"
+        )
+    )
+
+    previous_premium_users_result = await db.execute(
+        select(func.count(models.User.id)).filter(
+            models.User.subscription_plan != "free",
+            models.User.join_date < current_start
+        )
+    )
+
+    current_premium_users = current_premium_users_result.scalar() or 0
+    previous_premium_users = previous_premium_users_result.scalar() or 0
+
+    current_earnings = current_premium_users * 2.99
+    previous_earnings = previous_premium_users * 2.99
+
+    earnings_trend, earnings_direction = calculate_trend_with_direction(
+        current_earnings, previous_earnings
+    )
+
+    # 6. CHART DATA (LAST 7 DAYS)
     chart_query = (
         select(
             cast(models.BookScan.scan_date, Date).label('date'),
             func.count(models.BookScan.id).label('total_scans'),
             func.count(func.distinct(models.BookScan.owner_id)).label('unique_users')
         )
-        .filter(models.BookScan.scan_date >= seven_days_ago)
+        .filter(models.BookScan.scan_date >= current_start)
         .group_by(cast(models.BookScan.scan_date, Date))
         .order_by(cast(models.BookScan.scan_date, Date))
     )
-    
+
     chart_result = await db.execute(chart_query)
     chart_rows = chart_result.all()
-    
-    # Format chart data into a dictionary for easy date matching
+
     chart_data_map = {
-        row.date.strftime("%b %-d"): {"total_scans": row.total_scans, "unique_users": row.unique_users} 
+        row.date.strftime("%b %-d"): {
+            "total_scans": row.total_scans,
+            "unique_users": row.unique_users
+        }
         for row in chart_rows
     }
-    
-    # Fill in missing days with 0 so the frontend chart doesn't break
-    final_chart_data =[]
+
+    final_chart_data = []
     for i in range(7):
-        current_date = (seven_days_ago + timedelta(days=i)).strftime("%b %-d")
-        if current_date in chart_data_map:
+        date_str = (current_start + timedelta(days=i)).strftime("%b %-d")
+        if date_str in chart_data_map:
             final_chart_data.append({
-                "date": current_date,
-                "total_scans": chart_data_map[current_date]["total_scans"],
-                "unique_users": chart_data_map[current_date]["unique_users"]
+                "date": date_str,
+                "total_scans": chart_data_map[date_str]["total_scans"],
+                "unique_users": chart_data_map[date_str]["unique_users"]
             })
         else:
-            final_chart_data.append({"date": current_date, "total_scans": 0, "unique_users": 0})
+            final_chart_data.append({
+                "date": date_str,
+                "total_scans": 0,
+                "unique_users": 0
+            })
 
-    # 3. TOP SCANNED BOOKS
+    # 7. TOP SCANNED BOOKS
     top_books_query = (
         select(
             models.BookScan.title,
@@ -99,33 +177,36 @@ async def get_dashboard_overview(
         .order_by(desc('scan_count'))
         .limit(5)
     )
-    
+
     top_books_result = await db.execute(top_books_query)
     top_books_rows = top_books_result.all()
-    
-    top_books_list =[]
+
+    top_books_list = []
     for index, row in enumerate(top_books_rows):
         top_books_list.append({
             "rank": index + 1,
             "title": row.title,
-            "rating": row.rating, # e.g., "CAUTION", "CONCERN", "SAFE"
+            "rating": row.rating,
             "scans": row.scan_count
         })
 
-    # 4. CONSTRUCT FINAL RESPONSE
+    # 8. FINAL RESPONSE
     data = {
         "summary_metrics": {
             "total_earnings": {
-                "value": f"${mock_earnings:,.0f}", # Formats as $12,456
-                "trend": "+12% this month"         # Mocked trend
+                "value": f"${current_earnings:,.0f}",
+                "trend_percentage": earnings_trend,
+                "trend_direction": earnings_direction
             },
             "active_users": {
-                "value": f"{total_active_users:,}",
-                "trend": "+8.3%"
+                "value": f"{current_active_users:,}",
+                "trend_percentage": active_trend,
+                "trend_direction": active_direction
             },
             "total_scans": {
-                "value": f"{total_scans:,}",
-                "trend": "+12.5%"
+                "value": f"{current_scans:,}",
+                "trend_percentage": scans_trend,
+                "trend_direction": scans_direction
             }
         },
         "charts": {
