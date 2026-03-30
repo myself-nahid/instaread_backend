@@ -6,6 +6,7 @@ from sqlalchemy.future import select
 from jose import jwt, JWTError
 
 from app import models
+from app.api import deps
 from app.schemas import auth as auth_schemas
 from app.models.user import User
 from app.core import security
@@ -57,7 +58,7 @@ async def signup(payload: auth_schemas.SignupRequest, db: AsyncSession = Depends
     
     await send_email_mock(payload.email, otp, "Signup Verification")
     
-    return standard_response(201, "Signup successful. Please verify your email.", {"email": payload.email})
+    return standard_response(201, "Signup successful. Please verify your email.", {"email": payload.email, "otp": otp})
 
 # 2. VERIFY OTP (For Signup)
 @router.post("/verify-otp")
@@ -102,7 +103,7 @@ async def resend_otp(payload: auth_schemas.ResendOTPRequest, db: AsyncSession = 
     
     await send_email_mock(payload.email, new_otp, "Resend OTP")
     
-    return standard_response(200, "A new OTP has been sent to your email.")
+    return standard_response(200, "A new OTP has been sent to your email.", {"otp": new_otp})
 
 # 4. LOGIN API
 @router.post("/login")
@@ -127,6 +128,8 @@ async def login(payload: auth_schemas.LoginRequest, db: AsyncSession = Depends(g
         "user": {
             "name": user.full_name,
             "email": user.email,
+            "user_id": user.id,
+            "user_type": "admin" if user.is_superuser else "regular"
         },
         "tokens": {
             "access_token": access_token,
@@ -176,8 +179,7 @@ async def forgot_password(payload: auth_schemas.ForgotPasswordRequest, db: Async
     user = result.scalars().first()
     
     if not user:
-        # Return success even if user doesn't exist to prevent email enumeration attacks
-        return standard_response(200, "If an account exists with that email, an OTP has been sent.")
+        return standard_response(200, "If an account exists with that email, an OTP has been sent.")  
         
     otp = security.generate_6_digit_otp()
     user.otp = otp
@@ -233,3 +235,13 @@ async def logout():
     This endpoint exists to fulfill the UI action and return a standard response.
     """
     return standard_response(200, "Successfully logged out.")
+
+# Delete Account
+@router.delete("/delete-account")
+async def delete_account(
+    current_user: models.User = Depends(deps.get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    await db.delete(current_user)
+    await db.commit()
+    return standard_response(200, "Your account has been deleted successfully.")

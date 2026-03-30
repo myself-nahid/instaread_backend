@@ -12,6 +12,7 @@ from app.db.session import get_db
 from sqlalchemy.orm import aliased
 from sqlalchemy import or_
 from typing import Optional
+import re
 
 router = APIRouter()
 
@@ -260,7 +261,7 @@ async def delete_book_scan(
     
     return standard_response(200, f"Scan record ID {scan_id} has been deleted successfully.")
 
-# 4. USERS MANAGEMENT
+# User Management
 @router.get("/users")
 async def get_users_management(
     search: Optional[str] = Query(None, description="Search by user name or email"),
@@ -270,44 +271,134 @@ async def get_users_management(
     current_admin: models.User = Depends(deps.get_current_admin_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Fetches aggregated metrics and a paginated list of users for the Admin Users Management page."""
-    
-    # 1. SUMMARY METRICS
-    total_users_result = await db.execute(select(func.count(models.User.id)))
-    premium_users_result = await db.execute(select(func.count(models.User.id)).filter(models.User.subscription_plan != 'free'))
-    
-    # New users this week
-    one_week_ago = datetime.utcnow() - timedelta(days=7)
-    new_users_result = await db.execute(select(func.count(models.User.id)).filter(models.User.join_date >= one_week_ago))
+    """Fetches aggregated metrics and a paginated list of non-admin users with trends."""
 
+    # 1. TIME RANGES
+    now = datetime.utcnow()
+    one_week_ago = now - timedelta(days=7)
+    two_weeks_ago = now - timedelta(days=14)
+
+    # 2. TREND FUNCTION (3 DIRECTIONS)
+    def calculate_trend_with_direction(current, previous):
+        if previous == 0:
+            if current > 0:
+                return 100, "up"
+            return 0, "neutral"
+
+        percentage = round(((current - previous) / previous) * 100, 2)
+
+        if percentage > 0:
+            direction = "up"
+        elif percentage < 0:
+            direction = "down"
+        else:
+            direction = "neutral"
+
+        return percentage, direction
+
+    # 3. TOTAL USERS
+    current_total_users = await db.execute(
+        select(func.count(models.User.id))
+        .filter(models.User.is_superuser == False)
+    )
+
+    previous_total_users = await db.execute(
+        select(func.count(models.User.id))
+        .filter(
+            models.User.join_date < one_week_ago,
+            models.User.is_superuser == False
+        )
+    )
+
+    current_total = current_total_users.scalar() or 0
+    previous_total = previous_total_users.scalar() or 0
+
+    total_trend, total_direction = calculate_trend_with_direction(current_total, previous_total)
+
+    # 4. PREMIUM USERS
+    current_premium_users = await db.execute(
+        select(func.count(models.User.id))
+        .filter(
+            models.User.subscription_plan != 'free',
+            models.User.is_superuser == False
+        )
+    )
+
+    previous_premium_users = await db.execute(
+        select(func.count(models.User.id))
+        .filter(
+            models.User.subscription_plan != 'free',
+            models.User.join_date < one_week_ago,
+            models.User.is_superuser == False
+        )
+    )
+
+    current_premium = current_premium_users.scalar() or 0
+    previous_premium = previous_premium_users.scalar() or 0
+
+    premium_trend, premium_direction = calculate_trend_with_direction(current_premium, previous_premium)
+
+    # 5. NEW USERS (THIS WEEK vs LAST WEEK)
+    current_new_users = await db.execute(
+        select(func.count(models.User.id))
+        .filter(
+            models.User.join_date >= one_week_ago,
+            models.User.is_superuser == False
+        )
+    )
+
+    previous_new_users = await db.execute(
+        select(func.count(models.User.id))
+        .filter(
+            models.User.join_date >= two_weeks_ago,
+            models.User.join_date < one_week_ago,
+            models.User.is_superuser == False
+        )
+    )
+
+    current_new = current_new_users.scalar() or 0
+    previous_new = previous_new_users.scalar() or 0
+
+    new_trend, new_direction = calculate_trend_with_direction(current_new, previous_new)
+
+    # 6. SUMMARY METRICS WITH 3 TREND DIRECTIONS
     summary_metrics = {
-        "total_users": total_users_result.scalar() or 0,
-        "premium_users": premium_users_result.scalar() or 0,
-        "new_this_week": new_users_result.scalar() or 0
+        "total_users": {
+            "value": current_total,
+            "previous": previous_total,
+            "trend_percentage": total_trend,
+            "trend_direction": total_direction
+        },
+        "premium_users": {
+            "value": current_premium,
+            "previous": previous_premium,
+            "trend_percentage": premium_trend,
+            "trend_direction": premium_direction
+        },
+        "new_this_week": {
+            "value": current_new,
+            "previous": previous_new,
+            "trend_percentage": new_trend,
+            "trend_direction": new_direction
+        }
     }
 
-    # 2. MAIN PAGINATED USER LIST
-
-    # Subquery to count scans for each user
+    # 7. USER LIST
     scan_counts_subquery = (
-        select(
-            models.BookScan.owner_id,
-            func.count(models.BookScan.id).label('total_user_scans')
-        )
+        select(models.BookScan.owner_id, func.count(models.BookScan.id).label('total_user_scans'))
         .group_by(models.BookScan.owner_id)
         .subquery()
     )
     
-    # Main query for users, joining the scan counts
     main_query = (
         select(
             models.User,
             func.coalesce(scan_counts_subquery.c.total_user_scans, 0).label('total_scans')
         )
         .outerjoin(scan_counts_subquery, models.User.id == scan_counts_subquery.c.owner_id)
+        .filter(models.User.is_superuser == False)
     )
 
-    # Apply search filter
     if search:
         main_query = main_query.filter(
             or_(
@@ -316,41 +407,35 @@ async def get_users_management(
             )
         )
 
-    # Apply subscription dropdown filter
     if subscription:
         if subscription.lower() == 'premium':
             main_query = main_query.filter(models.User.subscription_plan != 'free')
         elif subscription.lower() == 'free':
             main_query = main_query.filter(models.User.subscription_plan == 'free')
 
-    # Get total count for pagination before applying limit/offset
     count_query = main_query.with_only_columns(func.count(models.User.id))
-    total_items_result = await db.execute(count_query)
-    total_items = total_items_result.scalar() or 0
+    total_items = (await db.execute(count_query)).scalar() or 0
     
-    # Apply sorting and pagination
     offset = (page - 1) * limit
     main_query = main_query.order_by(desc(models.User.join_date)).offset(offset).limit(limit)
 
-    query_result = await db.execute(main_query)
-    all_rows = query_result.all()
+    result = await db.execute(main_query)
+    rows = result.all()
 
     user_list = []
-    for row in all_rows:
-        user_record = row[0]
-        total_user_scans = row[1]
-        
+    for user_record, total_scans in rows:
         user_list.append({
             "id": user_record.id,
             "name": user_record.full_name,
             "email": user_record.email,
             "profile_picture_url": user_record.profile_picture_url,
             "join_date": user_record.join_date.strftime("%-m/%-d/%Y"),
-            "total_scans": total_user_scans,
+            "total_scans": total_scans,
             "subscription": user_record.subscription_plan.capitalize(),
             "status": "Active" if user_record.is_active else "Inactive"
         })
 
+    # 8. FINAL RESPONSE
     data = {
         "summary_metrics": summary_metrics,
         "pagination": {
@@ -433,41 +518,144 @@ async def delete_user(
     
     return standard_response(200, f"User {user_to_delete.email} has been deleted successfully.")
 
-# 7. TRANSACTION MANAGEMENT 
+# transactions management
 @router.get("/transactions")
 async def get_transactions_management(
-    search: Optional[str] = Query(None, description="Search by user name, email, or ISBN in their scans"),
+    search: Optional[str] = Query(None, description="Search by user name or email"),
     page: int = Query(1, ge=1),
     limit: int = Query(10, ge=1, le=100),
     current_admin: models.User = Depends(deps.get_current_admin_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Fetches aggregated metrics and a paginated list of user transactions."""
-    
-    # 1. SUMMARY METRICS 
-    total_earnings_result = await db.execute(select(func.sum(models.Transaction.amount)))
-    total_subscriptions_result = await db.execute(select(func.count(models.User.id)).filter(models.User.subscription_plan != 'free'))
-    active_users_result = await db.execute(select(func.count(models.User.id)).filter(models.User.is_active == True))
+    """Fetches aggregated metrics with trend directions and a paginated list of subscribed user transactions."""
 
+    # 1. TIME RANGES
+    now = datetime.utcnow()
+    one_week_ago = now - timedelta(days=7)
+    two_weeks_ago = now - timedelta(days=14)
+
+    # 2. TREND FUNCTION (3 DIRECTIONS)
+    def calculate_trend_with_direction(current, previous):
+        if previous == 0:
+            if current > 0:
+                return 100, "up"
+            return 0, "neutral"
+        
+        percentage = round(((current - previous) / previous) * 100, 2)
+
+        if percentage > 0:
+            direction = "up"
+        elif percentage < 0:
+            direction = "down"
+        else:
+            direction = "neutral"
+
+        return percentage, direction
+
+    # 3. TOTAL EARNINGS
+    current_earnings_result = await db.execute(
+        select(func.coalesce(func.sum(models.Transaction.amount), 0.0))
+        .join(models.User)
+        .filter(
+            models.User.is_superuser == False,
+            models.Transaction.transaction_date >= one_week_ago
+        )
+    )
+
+    previous_earnings_result = await db.execute(
+        select(func.coalesce(func.sum(models.Transaction.amount), 0.0))
+        .join(models.User)
+        .filter(
+            models.User.is_superuser == False,
+            models.Transaction.transaction_date.between(two_weeks_ago, one_week_ago)
+        )
+    )
+
+    current_earnings = current_earnings_result.scalar() or 0.0
+    previous_earnings = previous_earnings_result.scalar() or 0.0
+
+    earnings_trend, earnings_direction = calculate_trend_with_direction(
+        current_earnings, previous_earnings
+    )
+
+    # 4. TOTAL SUBSCRIPTIONS
+    current_subscriptions_result = await db.execute(
+        select(func.count(models.User.id)).filter(
+            models.User.subscription_plan != 'free',
+            models.User.is_superuser == False
+        )
+    )
+
+    previous_subscriptions_result = await db.execute(
+        select(func.count(models.User.id)).filter(
+            models.User.subscription_plan != 'free',
+            models.User.join_date < one_week_ago,
+            models.User.is_superuser == False
+        )
+    )
+
+    current_subscriptions = current_subscriptions_result.scalar() or 0
+    previous_subscriptions = previous_subscriptions_result.scalar() or 0
+
+    subs_trend, subs_direction = calculate_trend_with_direction(
+        current_subscriptions, previous_subscriptions
+    )
+
+    # 5. ACTIVE USERS
+    current_active_users_result = await db.execute(
+        select(func.count(models.User.id)).filter(
+            models.User.is_active == True,
+            models.User.last_active >= one_week_ago,
+            models.User.is_superuser == False
+        )
+    )
+
+    previous_active_users_result = await db.execute(
+        select(func.count(models.User.id)).filter(
+            models.User.is_active == True,
+            models.User.last_active.between(two_weeks_ago, one_week_ago),
+            models.User.is_superuser == False
+        )
+    )
+
+    current_active_users = current_active_users_result.scalar() or 0
+    previous_active_users = previous_active_users_result.scalar() or 0
+
+    active_trend, active_direction = calculate_trend_with_direction(
+        current_active_users, previous_active_users
+    )
+
+    # 6. SUMMARY METRICS
     summary_metrics = {
-        "total_earnings": total_earnings_result.scalar() or 0.0,
-        "total_subscriptions": total_subscriptions_result.scalar() or 0,
-        "active_users": active_users_result.scalar() or 0,
+        "total_earnings": {
+            "value": f"${current_earnings:,.2f}",
+            "trend_percentage": earnings_trend,
+            "trend_direction": earnings_direction
+        },
+        "total_subscriptions": {
+            "value": f"{current_subscriptions:,}",
+            "trend_percentage": subs_trend,
+            "trend_direction": subs_direction
+        },
+        "active_users": {
+            "value": f"{current_active_users:,}",
+            "trend_percentage": active_trend,
+            "trend_direction": active_direction
+        }
     }
 
-    # 2. MAIN PAGINATED TRANSACTION LIST
-
-    # Subquery to count scans for each user
+    # 7. TRANSACTION LIST (ONLY USERS WITH TRANSACTIONS)
     scan_counts_subquery = (
         select(models.BookScan.owner_id, func.count(models.BookScan.id).label('total_user_scans'))
-        .group_by(models.BookScan.owner_id).subquery()
+        .group_by(models.BookScan.owner_id)
+        .subquery()
     )
-    
-    # Subquery to find the most recent transaction provider for each user
+
     latest_transaction_subquery = (
         select(
             models.Transaction.user_id,
-            models.Transaction.provider
+            models.Transaction.provider,
+            models.Transaction.transaction_date
         )
         .distinct(models.Transaction.user_id)
         .order_by(models.Transaction.user_id, desc(models.Transaction.transaction_date))
@@ -478,13 +666,14 @@ async def get_transactions_management(
         select(
             models.User,
             func.coalesce(scan_counts_subquery.c.total_user_scans, 0).label('total_scans'),
-            latest_transaction_subquery.c.provider.label('transaction_provider')
+            latest_transaction_subquery.c.provider,
+            latest_transaction_subquery.c.transaction_date
         )
+        .join(latest_transaction_subquery, models.User.id == latest_transaction_subquery.c.user_id)
         .outerjoin(scan_counts_subquery, models.User.id == scan_counts_subquery.c.owner_id)
-        .outerjoin(latest_transaction_subquery, models.User.id == latest_transaction_subquery.c.user_id)
+        .filter(models.User.is_superuser == False)
     )
 
-    # Apply search filter
     if search:
         main_query = main_query.filter(
             or_(
@@ -493,32 +682,27 @@ async def get_transactions_management(
             )
         )
 
-    # Get total count for pagination
     count_query = main_query.with_only_columns(func.count(models.User.id))
-    total_items_result = await db.execute(count_query)
-    total_items = total_items_result.scalar() or 0
+    total_items = (await db.execute(count_query)).scalar() or 0
 
-    # Apply sorting and pagination
     offset = (page - 1) * limit
     main_query = main_query.order_by(desc(models.User.last_active)).offset(offset).limit(limit)
 
-    query_result = await db.execute(main_query)
-    all_rows = query_result.all()
+    result = await db.execute(main_query)
+    rows = result.all()
 
     transaction_list = []
-    for row in all_rows:
-        user_record, total_user_scans, provider = row
+    for user, total_scans, provider, txn_date in rows:
         transaction_list.append({
-            "user_id": user_record.id,
-            "name": user_record.full_name,
-            "email": user_record.email,
-            "profile_picture_url": user_record.profile_picture_url,
-            "join_date": user_record.join_date.strftime("%-m/%-d/%Y"),
-            "total_scans": total_user_scans,
-            "last_active": user_record.last_active.strftime("%-m/%-d/%Y"),
+            "user_id": user.id,
+            "transaction_id": f"TXN{user.id:06d}",
+            "name": user.full_name,
+            "email": user.email,
+            "transaction_date": txn_date.strftime("%-m/%-d/%Y") if txn_date else None,
             "transaction_provider": provider or "N/A"
         })
 
+    # 8. FINAL RESPONSE
     data = {
         "summary_metrics": summary_metrics,
         "pagination": {
@@ -532,88 +716,121 @@ async def get_transactions_management(
 
     return standard_response(200, "Transaction data fetched successfully", data)
 
-# 8. PRIVACY & POLICY MANAGEMENT (CRUD)
-@router.post("/policies", status_code=201)
-async def create_policy(
-    payload: policy_schemas.PolicyCreate,
-    current_admin: models.User = Depends(deps.get_current_admin_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Admin: Creates a new policy document."""
-    new_policy = models.Policy(title=payload.title, description=payload.description)
-    db.add(new_policy)
-    await db.commit()
-    await db.refresh(new_policy)
-    return standard_response(201, "Policy created successfully", {"id": new_policy.id, "title": new_policy.title})
+# slug generator 
+def generate_slug(title: str) -> str:
+    s = title.lower().strip()
+    s = re.sub(r'[^\w\s-]', '', s)
+    s = re.sub(r'[\s_-]+', '-', s)
+    s = re.sub(r'^-+|-+$', '', s)
+    return s
 
+# POLICY MANAGEMENT (GET + PATCH ONLY)
 @router.get("/policies")
-async def get_all_policies(
+async def get_policies(
+    policy_slug: Optional[str] = None,
     current_admin: models.User = Depends(deps.get_current_admin_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Admin: Retrieves a list of all policies."""
+    """
+    GET:
+    - All policies (if no slug)
+    - Single policy (if slug provided)
+    """
+
+    if policy_slug:
+        result = await db.execute(
+            select(models.Policy).filter(models.Policy.slug == policy_slug)
+        )
+        policy = result.scalars().first()
+
+        if not policy:
+            return standard_response(404, "Policy not found.")
+
+        return standard_response(200, "Policy fetched successfully", {
+            "slug": policy.slug,
+            "title": policy.title,
+            "description": policy.description
+        })
+
+    # Get all policies
     result = await db.execute(select(models.Policy).order_by(models.Policy.id))
     policies = result.scalars().all()
-    
-    policy_list = [{"id": p.id, "title": p.title, "description": p.description} for p in policies]
-    
-    return standard_response(200, "Policies fetched successfully", {"policies": policy_list})
 
-@router.get("/policies/{policy_id}")
-async def get_policy(
-    policy_id: int,
+    policy_list = [
+        {
+            "slug": p.slug,
+            "title": p.title,
+            "description": p.description
+        }
+        for p in policies
+    ]
+
+    return standard_response(200, "Policies fetched successfully", {
+        "policies": policy_list
+    })
+
+
+@router.patch("/policies/{policy_slug}")
+async def upsert_policy(
+    policy_slug: str,
+    payload: policy_schemas.PolicyCreate,  
     current_admin: models.User = Depends(deps.get_current_admin_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Admin: Retrieves a single policy by its ID."""
-    result = await db.execute(select(models.Policy).filter(models.Policy.id == policy_id))
+    """
+    PATCH:
+    - Update existing policy
+    - Create new policy if not exists (UPSERT)
+    """
+
+    result = await db.execute(
+        select(models.Policy).filter(models.Policy.slug == policy_slug)
+    )
     policy = result.scalars().first()
-    
+
+    # If NOT exists → CREATE
     if not policy:
-        return standard_response(404, "Policy not found.")
-        
-    return standard_response(200, "Policy fetched successfully", {
-        "id": policy.id,
+        slug = generate_slug(payload.title)
+
+        # Prevent duplicate slug
+        existing = await db.execute(
+            select(models.Policy).filter(models.Policy.slug == slug)
+        )
+        if existing.scalars().first():
+            return standard_response(400, "Policy with this title already exists.")
+
+        new_policy = models.Policy(
+            slug=slug,
+            title=payload.title,
+            description=payload.description
+        )
+
+        db.add(new_policy)
+        await db.commit()
+        await db.refresh(new_policy)
+
+        return standard_response(201, "Policy created successfully", {
+            "slug": new_policy.slug,
+            "title": new_policy.title,
+            "description": new_policy.description
+        })
+
+    # If exists → UPDATE
+    update_data = payload.dict(exclude_unset=True)
+
+    # If title updated → regenerate slug
+    if "title" in update_data:
+        new_slug = generate_slug(update_data["title"])
+        policy.slug = new_slug
+
+    for key, value in update_data.items():
+        setattr(policy, key, value)
+
+    await db.commit()
+    await db.refresh(policy)
+
+    return standard_response(200, "Policy updated successfully", {
+        "slug": policy.slug,
         "title": policy.title,
         "description": policy.description
     })
-
-@router.put("/policies/{policy_id}")
-async def update_policy(
-    policy_id: int,
-    payload: policy_schemas.PolicyUpdate,
-    current_admin: models.User = Depends(deps.get_current_admin_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Admin: Updates an existing policy's title and/or description."""
-    result = await db.execute(select(models.Policy).filter(models.Policy.id == policy_id))
-    policy = result.scalars().first()
-
-    if not policy:
-        return standard_response(404, "Policy not found.")
-        
-    if payload.title:
-        policy.title = payload.title
-    if payload.description:
-        policy.description = payload.description
-        
-    await db.commit()
-    return standard_response(200, f"Policy ID {policy_id} updated successfully.")
-
-@router.delete("/policies/{policy_id}")
-async def delete_policy(
-    policy_id: int,
-    current_admin: models.User = Depends(deps.get_current_admin_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Admin: Deletes a policy."""
-    result = await db.execute(select(models.Policy).filter(models.Policy.id == policy_id))
-    policy = result.scalars().first()
-
-    if not policy:
-        return standard_response(404, "Policy not found.")
-        
-    await db.delete(policy)
-    await db.commit()
-    
-    return standard_response(200, f"Policy ID {policy_id} has been deleted successfully.")

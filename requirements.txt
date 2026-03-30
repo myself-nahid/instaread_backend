@@ -5,9 +5,10 @@ asyncpg
 pydantic[email]
 pydantic-settings
 python-jose[cryptography]
-bcrypt  # <-- Changed this line
+bcrypt  
 python-multipart
 python-dotenv
 alembic
 requests
 httpx
+aiofiles
