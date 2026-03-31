@@ -15,7 +15,8 @@ origins = [
     "http://localhost",
     "http://localhost:3000",
     "http://10.10.12.59:5173",
-    "http://localhost:5173"
+    "http://10.10.12.59:5173/",
+    "http://localhost:5173/"
 ]
 
 # Set all CORS enabled origins

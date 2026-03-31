@@ -236,7 +236,7 @@ async def logout():
     """
     return standard_response(200, "Successfully logged out.")
 
-# Delete Account
+# 10. DELETE ACCOUNT API
 @router.delete("/delete-account")
 async def delete_account(
     current_user: models.User = Depends(deps.get_current_user),
@@ -245,3 +245,38 @@ async def delete_account(
     await db.delete(current_user)
     await db.commit()
     return standard_response(200, "Your account has been deleted successfully.")
+
+# 11. ADMIN LOGIN API
+@router.post("/admin/login")
+async def admin_login(payload: auth_schemas.AdminLoginRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Handles login for admin users (superusers) only.
+    """
+    result = await db.execute(select(models.User).filter(models.User.email == payload.email))
+    user = result.scalars().first()
+    
+    if not user:
+        return standard_response(401, "Invalid email or password.")
+        
+    if not user.is_superuser:
+        return standard_response(403, "Access Denied. This login is for administrators only.")
+        
+    if not security.verify_password(payload.password, user.hashed_password):
+        return standard_response(401, "Invalid email or password.")
+    
+    access_token = security.create_access_token(subject=user.email)
+    refresh_token = security.create_refresh_token(subject=user.email, expires_delta=timedelta(days=7))
+    
+    data = {
+        "admin": {
+            "name": user.full_name,
+            "email": user.email,
+        },
+        "tokens": {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer"
+        }
+    }
+    
+    return standard_response(200, "Admin login successful", data)

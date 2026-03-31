@@ -11,6 +11,10 @@ class LoginRequest(BaseModel):
     password: str = Field(..., max_length=72, min_length=6)
     remember_me: Optional[bool] = False
 
+class AdminLoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
 class OTPVerifyRequest(BaseModel):
     email: EmailStr
     otp: str
