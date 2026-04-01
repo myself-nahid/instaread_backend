@@ -12,3 +12,4 @@ alembic
 requests
 httpx
 aiofiles
+stripe
