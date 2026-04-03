@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     AI_SERVICE_URL_IMAGE: str = os.getenv("AI_SERVICE_URL_IMAGE", "http://127.0.0.1:8002/scan-book-image")
     STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY")
     STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET")
+    RESEND_API_KEY: str = os.getenv("RESEND_API_KEY")
+    MAIL_FROM: str = os.getenv("MAIL_FROM", "onboarding@resend.dev")
 
     class Config:
         case_sensitive = True

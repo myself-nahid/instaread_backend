@@ -12,6 +12,7 @@ from app.models.user import User
 from app.core import security
 from app.core.config import settings
 from app.db.session import get_db
+from app.utils.email import send_otp_email
 
 router = APIRouter()
 
@@ -30,8 +31,8 @@ def standard_response(status_code: int, message: str, data: dict = None, status:
     )
 
 # Helper function to mock sending emails 
-async def send_email_mock(email: str, otp: str, context: str):
-    print(f"[{context}] Sending OTP {otp} to {email}")
+# async def send_email_mock(email: str, otp: str, context: str):
+#     print(f"[{context}] Sending OTP {otp} to {email}")
 
 # 1. SIGN UP API
 @router.post("/signup")
@@ -56,7 +57,7 @@ async def signup(payload: auth_schemas.SignupRequest, db: AsyncSession = Depends
     db.add(new_user)
     await db.commit()
     
-    await send_email_mock(payload.email, otp, "Signup Verification")
+    await send_otp_email(payload.email, otp, subject="Verify Your Account")
     
     return standard_response(201, "Signup successful. Please verify your email.", {"email": payload.email, "otp": otp})
 
@@ -101,7 +102,7 @@ async def resend_otp(payload: auth_schemas.ResendOTPRequest, db: AsyncSession = 
     user.otp_expire_at = datetime.utcnow() + timedelta(minutes=10)
     await db.commit()
     
-    await send_email_mock(payload.email, new_otp, "Resend OTP")
+    await send_otp_email(payload.email, new_otp, subject="Your New Verification Code")
     
     return standard_response(200, "A new OTP has been sent to your email.", {"otp": new_otp})
 
@@ -186,7 +187,7 @@ async def forgot_password(payload: auth_schemas.ForgotPasswordRequest, db: Async
     user.otp_expire_at = datetime.utcnow() + timedelta(minutes=15)
     await db.commit()
     
-    await send_email_mock(payload.email, otp, "Forgot Password Reset")
+    await send_otp_email(payload.email, otp, subject="Password Reset Request")
     
     return standard_response(200, "If an account exists with that email, an OTP has been sent.")
 
