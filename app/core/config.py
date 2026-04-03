@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET")
     RESEND_API_KEY: str = os.getenv("RESEND_API_KEY")
     MAIL_FROM: str = os.getenv("MAIL_FROM", "onboarding@resend.dev")
+    CLOUDINARY_CLOUD_NAME: str = os.getenv("CLOUDINARY_CLOUD_NAME")
+    CLOUDINARY_API_KEY: str = os.getenv("CLOUDINARY_API_KEY")
+    CLOUDINARY_API_SECRET: str = os.getenv("CLOUDINARY_API_SECRET")
 
     class Config:
         case_sensitive = True

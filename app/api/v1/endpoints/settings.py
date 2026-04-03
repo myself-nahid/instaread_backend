@@ -1,4 +1,3 @@
-import aiofiles
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +11,7 @@ from app.api import deps
 from app.core import security
 from app.db.session import get_db
 from app.schemas.settings import AccountInfoUpdate, SubscriptionUpgradeRequest
+from app.utils.cloudinary_uploader import upload_profile_image
 
 router = APIRouter()
 
@@ -61,42 +61,26 @@ async def get_settings_profile(
     
     return standard_response(200, "Settings profile fetched successfully", data)
 
-# 6. UPLOAD/CHANGE PROFILE PICTURE
+# 6. UPLOAD/CHANGE PROFILE PICTURE (Cloudinary)
 @router.post("/profile-picture")
 async def upload_profile_picture(
-    request: Request, # We need the request object to build the full URL
     file: UploadFile = File(...),
     current_user: models.User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Handles uploading a new profile picture for the logged-in user."""
+    """Handles uploading a new profile picture for the user to Cloudinary."""
     
     # 1. Validate File Type
     if file.content_type not in ["image/jpeg", "image/png"]:
         return standard_response(400, "Invalid file type. Please upload a JPG or PNG image.")
 
-    # 2. Generate a Unique Filename
-    # We use UUID to ensure no two users can overwrite each other's files
-    file_extension = file.filename.split(".")[-1]
-    unique_filename = f"{uuid.uuid4()}.{file_extension}"
+    # 2. Upload to Cloudinary using our utility function
+    public_file_url = await upload_profile_image(file, current_user.id)
     
-    # Define the save path
-    save_path = os.path.join("static/profile_pictures", unique_filename)
-    
-    try:
-        # 3. Save the File Asynchronously
-        async with aiofiles.open(save_path, "wb") as out_file:
-            content = await file.read()
-            await out_file.write(content)
-            
-    except Exception as e:
-        return standard_response(500, f"Error saving file: {str(e)}")
+    if not public_file_url:
+        return standard_response(500, "Failed to upload profile picture.")
 
-    # 4. Construct the Full Public URL
-    base_url = str(request.base_url)
-    public_file_url = f"{base_url}static/profile_pictures/{unique_filename}"
-    
-    # 5. Update the Database
+    # 3. Update the user's record in the database with the new Cloudinary URL
     current_user.profile_picture_url = public_file_url
     await db.commit()
     

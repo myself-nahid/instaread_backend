@@ -11,6 +11,7 @@ python-dotenv
 alembic
 requests
 httpx
-aiofiles
+# aiofiles
+cloudinary
 stripe
 resend
