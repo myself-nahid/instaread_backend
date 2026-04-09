@@ -277,7 +277,8 @@ async def admin_login(payload: auth_schemas.AdminLoginRequest, db: AsyncSession 
             "access_token": access_token,
             "refresh_token": refresh_token,
             "token_type": "bearer"
-        }
+        },
+        "role": user.role if hasattr(user, "role") else "admin"
     }
     
     return standard_response(200, "Admin login successful", data)

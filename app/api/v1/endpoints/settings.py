@@ -45,11 +45,14 @@ async def get_settings_profile(
     if isinstance(scans_remaining, int) and scans_remaining < 0:
         scans_remaining = 0
 
+    user_role = "admin" if current_user.is_superuser else "user"
+
     data = {
         "user": {
             "name": current_user.full_name,
             "email": current_user.email,
-            "profile_picture_url": current_user.profile_picture_url
+            "profile_picture_url": current_user.profile_picture_url,
+            "role": user_role
         },
         "subscription": {
             "current_plan": current_user.subscription_plan.capitalize() + " Tier",
