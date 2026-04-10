@@ -69,5 +69,5 @@ static/
 uploads/
 
 # Ignore Alembic migration versions
-alembic/versions/*
-alembic/versions
+# alembic/versions/*
+# alembic/versions
