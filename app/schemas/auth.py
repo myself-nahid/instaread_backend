@@ -8,12 +8,12 @@ class SignupRequest(BaseModel):
 
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str = Field(..., max_length=72, min_length=6)
+    password: str = Field(..., max_length=72)
     remember_me: Optional[bool] = False
 
 class AdminLoginRequest(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(..., max_length=72)
 
 class OTPVerifyRequest(BaseModel):
     email: EmailStr
