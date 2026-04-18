@@ -37,16 +37,32 @@ def standard_response(status_code: int, message: str, data: dict = None, status:
 # 1. SIGN UP API
 @router.post("/signup")
 async def signup(payload: auth_schemas.SignupRequest, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).filter(User.email == payload.email))
+    # 1. Check if user already exists
+    result = await db.execute(select(models.User).filter(models.User.email == payload.email))
     user = result.scalars().first()
     
-    if user:
-        return standard_response(400, "User with this email already exists.")
-    
     otp = security.generate_6_digit_otp()
-    otp_expiry = datetime.utcnow() + timedelta(minutes=10) # OTP valid for 10 mins
+    otp_expiry = datetime.utcnow() + timedelta(minutes=10)
     
-    new_user = User(
+    if user:
+        # SCENARIO A: User exists and is already verified
+        if user.is_verified:
+            return standard_response(400, "User with this email already exists. Please log in.")
+        
+        # SCENARIO B: User exists but was NEVER verified (Abandoned signup)
+        # Update the existing record with new info and a new OTP
+        user.full_name = payload.name
+        user.hashed_password = security.get_password_hash(payload.password)
+        user.otp = otp
+        user.otp_expire_at = otp_expiry
+        
+        await db.commit()
+        await send_otp_email(payload.email, otp, subject="Verify Your Account")
+        
+        return standard_response(200, "Account registration restarted. A new OTP has been sent to your email.", {"email": payload.email})
+
+    # SCENARIO C: New user signup
+    new_user = models.User(
         full_name=payload.name,
         email=payload.email,
         hashed_password=security.get_password_hash(payload.password),
@@ -59,7 +75,7 @@ async def signup(payload: auth_schemas.SignupRequest, db: AsyncSession = Depends
     
     await send_otp_email(payload.email, otp, subject="Verify Your Account")
     
-    return standard_response(201, "Signup successful. Please verify your email.", {"email": payload.email, "otp": otp})
+    return standard_response(201, "Signup successful. Please verify your email.", {"email": payload.email})
 
 # 2. VERIFY OTP (For Signup)
 @router.post("/verify-otp")
