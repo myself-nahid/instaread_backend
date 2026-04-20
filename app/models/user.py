@@ -8,6 +8,10 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
     profile_picture_url = Column(String, nullable=True)
+
+    # SOCIAL LOGIN FIELDS 
+    social_provider = Column(String, nullable=True) # 'google' or 'apple'
+    social_id = Column(String, index=True, nullable=True) # Unique ID from Google/Apple
     
     # OTP and Verification Fields
     is_verified = Column(Boolean, default=False)

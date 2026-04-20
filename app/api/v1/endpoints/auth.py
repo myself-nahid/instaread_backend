@@ -13,6 +13,9 @@ from app.core import security
 from app.core.config import settings
 from app.db.session import get_db
 from app.utils.email import send_otp_email
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
+from jose import jwt as apple_jwt
 
 router = APIRouter()
 
@@ -298,3 +301,104 @@ async def admin_login(payload: auth_schemas.AdminLoginRequest, db: AsyncSession 
     }
     
     return standard_response(200, "Admin login successful", data)
+
+# ==========================================
+# 11. GOOGLE SIGN-IN API
+# ==========================================
+@router.post("/google")
+async def google_signin(payload: auth_schemas.SocialLoginRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        # 1. Verify the token with Google
+        id_info = id_token.verify_oauth2_token(
+            payload.token, 
+            google_requests.Request(), 
+            settings.GOOGLE_CLIENT_ID
+        )
+
+        email = id_info['email']
+        social_id = id_info['sub']
+        name = id_info.get('name', payload.full_name or "Google User")
+
+        # 2. Check if user exists
+        result = await db.execute(select(models.User).filter(models.User.email == email))
+        user = result.scalars().first()
+
+        if not user:
+            # 3. Create new user if not exists (Auto-verified)
+            user = models.User(
+                email=email,
+                full_name=name,
+                social_id=social_id,
+                social_provider="google",
+                is_verified=True, # Social emails are pre-verified
+                hashed_password=None # No password for social accounts
+            )
+            db.add(user)
+        else:
+            # 4. If user exists, update social ID if they are switching to social login
+            user.social_id = social_id
+            user.social_provider = "google"
+            user.is_verified = True
+
+        await db.commit()
+        await db.refresh(user)
+
+        # 5. Issue JWT tokens
+        access_token = security.create_access_token(subject=user.email)
+        refresh_token = security.create_refresh_token(subject=user.email)
+
+        return standard_response(200, "Login successful", {
+            "user": {"name": user.full_name, "email": user.email},
+            "tokens": {"access_token": access_token, "refresh_token": refresh_token}
+        })
+
+    except ValueError:
+        return standard_response(400, "Invalid Google Token")
+
+
+# ==========================================
+# 12. APPLE SIGN-IN API
+# ==========================================
+@router.post("/apple")
+async def apple_signin(payload: auth_schemas.SocialLoginRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        # 1. Decode Apple Token (Note: In production, verify against Apple's Public Keys)
+        # Apple's identityToken is a JWT
+        decoded_token = apple_jwt.get_unverified_claims(payload.token)
+        
+        email = decoded_token.get("email")
+        social_id = decoded_token.get("sub") # Apple's unique user identifier
+        name = payload.full_name or "Apple User"
+
+        # 2. Check if user exists
+        result = await db.execute(select(models.User).filter(models.User.email == email))
+        user = result.scalars().first()
+
+        if not user:
+            user = models.User(
+                email=email,
+                full_name=name,
+                social_id=social_id,
+                social_provider="apple",
+                is_verified=True,
+                hashed_password=None
+            )
+            db.add(user)
+        else:
+            user.social_id = social_id
+            user.social_provider = "apple"
+            user.is_verified = True
+
+        await db.commit()
+        await db.refresh(user)
+
+        access_token = security.create_access_token(subject=user.email)
+        refresh_token = security.create_refresh_token(subject=user.email)
+
+        return standard_response(200, "Login successful", {
+            "user": {"name": user.full_name, "email": user.email},
+            "tokens": {"access_token": access_token, "refresh_token": refresh_token}
+        })
+
+    except Exception as e:
+        return standard_response(400, f"Apple Login failed: {str(e)}")

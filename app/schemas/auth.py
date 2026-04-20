@@ -11,6 +11,10 @@ class LoginRequest(BaseModel):
     password: str = Field(..., max_length=72)
     remember_me: Optional[bool] = False
 
+class SocialLoginRequest(BaseModel):
+    token: str # The id_token from Google or identityToken from Apple
+    full_name: Optional[str] = None # Optional name if provided by mobile
+
 class AdminLoginRequest(BaseModel):
     email: EmailStr
     password: str = Field(..., max_length=72)
