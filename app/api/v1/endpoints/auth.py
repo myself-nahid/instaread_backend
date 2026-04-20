@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
@@ -325,13 +326,18 @@ async def google_signin(payload: auth_schemas.SocialLoginRequest, db: AsyncSessi
 
         if not user:
             # 3. Create new user if not exists (Auto-verified)
+            
+            # Generate a massive, random string for the password so the database is happy
+            dummy_password = str(uuid.uuid4())
+            
             user = models.User(
                 email=email,
                 full_name=name,
                 social_id=social_id,
                 social_provider="google",
-                is_verified=True, # Social emails are pre-verified
-                hashed_password=None # No password for social accounts
+                is_verified=True, 
+                # Hash the dummy password so it safely fits in the database
+                hashed_password=security.get_password_hash(dummy_password) 
             )
             db.add(user)
         else:
@@ -375,13 +381,15 @@ async def apple_signin(payload: auth_schemas.SocialLoginRequest, db: AsyncSessio
         user = result.scalars().first()
 
         if not user:
+            dummy_password = str(uuid.uuid4())
+            
             user = models.User(
                 email=email,
                 full_name=name,
                 social_id=social_id,
                 social_provider="apple",
                 is_verified=True,
-                hashed_password=None
+                hashed_password=security.get_password_hash(dummy_password)
             )
             db.add(user)
         else:
