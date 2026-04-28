@@ -1,22 +1,14 @@
-import stripe
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app import models
-from app.api import deps
 from app.core.config import settings
 from app.db.session import get_db
-
-stripe.api_key = settings.STRIPE_SECRET_KEY
+from app.schemas.payment import AppSubscriptionWebhook 
 
 router = APIRouter()
-
-STRIPE_PRICE_ID_MAP = {
-    "monthly": "price_1SNnG4CA7xIZZJGSBYEkD37N",
-    "annual": "price_1SNnHtCA7xIZZJGSp3YRq0JA"
-}
 
 def standard_response(status_code: int, message: str, data: dict = None, status: str = "success"):
     if status_code >= 400: status = "error"
@@ -25,95 +17,55 @@ def standard_response(status_code: int, message: str, data: dict = None, status:
         content={"status": status, "status_code": status_code, "message": message, "data": data or {}}
     )
 
-@router.post("/create-checkout-session")
-async def create_checkout_session(
-    plan_name: str,
-    current_user: models.User = Depends(deps.get_current_user)
-):
-    """
-    Creates a Stripe Checkout session with line_items expanded for the webhook.
-    """
-    plan = plan_name.lower()
-    if plan not in STRIPE_PRICE_ID_MAP:
-        return standard_response(400, "Invalid plan selected. Choose 'monthly' or 'annual'.")
-
-    price_id = STRIPE_PRICE_ID_MAP[plan]
-
-    try:
-        checkout_session = stripe.checkout.Session.create(
-            line_items=[{"price": price_id, "quantity": 1}],
-            mode='subscription',
-            client_reference_id=str(current_user.id),
-            success_url='https://safe-read.netlify.app?session_id={CHECKOUT_SESSION_ID}',
-            cancel_url='https://safe-read.netlify.app/cancel',
-            expand=['line_items'], 
-        )
-        return standard_response(200, "Checkout session created.", {"checkout_url": checkout_session.url})
-
-    except Exception as e:
-        return standard_response(500, f"Error creating Stripe session: {str(e)}")
-
-
-@router.post("/webhooks/stripe")
-async def stripe_webhook(
-    request: Request,
-    stripe_signature: str = Header(None),
+@router.post("/webhooks/app-subscription")
+async def app_subscription_webhook(
+    payload: AppSubscriptionWebhook,
+    x_webhook_secret: str = Header(None), # The App developer must pass this in the Headers
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Listens for events from Stripe and updates the user's subscription on successful payment.
+    Secure Webhook for the Mobile App to update user subscription status.
     """
-    try:
-        payload = await request.body()
-        event = stripe.Webhook.construct_event(
-            payload=payload, 
-            sig_header=stripe_signature, 
-            secret=settings.STRIPE_WEBHOOK_SECRET
+    # 1. SECURITY CHECK: Verify the secret key matches
+    if x_webhook_secret != settings.APP_WEBHOOK_SECRET:
+        return standard_response(401, "Unauthorized: Invalid Webhook Secret")
+
+    # 2. Find the user
+    result = await db.execute(select(models.User).filter(models.User.id == payload.user_id))
+    user = result.scalars().first()
+
+    if not user:
+        return standard_response(404, "User not found")
+
+    # 3. Handle the Event
+    event = payload.event_type.lower()
+    plan = payload.plan_name.lower()
+
+    if event in["purchase", "renewal"]:
+        # Upgrade the user
+        user.subscription_plan = plan
+        
+        # Log the transaction
+        new_transaction = models.Transaction(
+            user_id=user.id,
+            amount=payload.amount,
+            provider=payload.provider,
+            status="Completed"
+            # (If you added a transaction_id column to your model, you can save it here too)
         )
-    except Exception as e:
-        return standard_response(400, f"Webhook signature verification failed: {str(e)}")
+        db.add(new_transaction)
+        message = f"User {user.id} upgraded to {plan}"
 
-    if event['type'] == 'checkout.session.completed':
-        session = event['data']['object']
+    elif event == "cancellation":
+        # Downgrade the user back to free
+        user.subscription_plan = "free"
+        message = f"User {user.id} subscription cancelled"
         
-        try:
-            session_with_line_items = stripe.checkout.Session.retrieve(
-                session.id,
-                expand=["line_items"]
-            )
-            line_items = session_with_line_items.line_items
-            if not line_items or not line_items.data:
-                print(f"ERROR: Could not retrieve line_items for session {session.id}")
-                return JSONResponse(content={'status': 'error', 'message': 'Could not retrieve line_items'}, status_code=200)
-        except Exception as e:
-            print(f"ERROR retrieving session from Stripe: {str(e)}")
-            return JSONResponse(content={'status': 'error', 'message': 'Stripe API error'}, status_code=200)
+    else:
+        return standard_response(400, f"Unknown event_type: {event}")
 
-        user_id = session['client_reference_id']
-        amount_total = session['amount_total']
-        payment_provider = "Stripe"
-        
-        if not user_id:
-            return standard_response(400, "Webhook received without a client_reference_id.")
-
-        result = await db.execute(select(models.User).filter(models.User.id == int(user_id)))
-        user = result.scalars().first()
-
-        if user:
-            plan_id = line_items['data'][0]['price']['id']
-            new_plan_status = "monthly" if plan_id == STRIPE_PRICE_ID_MAP["monthly"] else "annual"
-
-            user.subscription_plan = new_plan_status
-            
-            new_transaction = models.Transaction(
-                user_id=user.id,
-                amount=amount_total / 100.0,
-                provider=payment_provider,
-                status="Completed"
-            )
-            db.add(new_transaction)
-            
-            await db.commit()
-            print(f"Successfully updated user {user.id} to {new_plan_status} plan.")
-
-    return JSONResponse(content={'status': 'received'}, status_code=200)
+    # 4. Save to Database
+    await db.commit()
+    
+    # Return a 200 OK so the App Developer knows it succeeded
+    return standard_response(200, message)

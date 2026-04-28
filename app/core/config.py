@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     CLOUDINARY_API_SECRET: str = os.getenv("CLOUDINARY_API_SECRET")
     GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID")
     APPLE_APP_ID: str = os.getenv("APPLE_APP_ID")
+    APP_WEBHOOK_SECRET: str = os.getenv("APP_WEBHOOK_SECRET", "default_secret")
 
 
     class Config:
