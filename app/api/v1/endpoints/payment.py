@@ -20,15 +20,14 @@ def standard_response(status_code: int, message: str, data: dict = None, status:
 
 @router.post("/webhooks/app-subscription")
 async def app_subscription_webhook(
-    request: Request, # Accept the raw request to bypass strict schema validation
+    request: Request, 
     x_webhook_secret: str = Header(None), 
-    authorization: str = Header(None), # RevenueCat often uses the Authorization header
+    authorization: str = Header(None), 
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Secure Webhook to process RevenueCat Subscription Events.
+    Secure Webhook to process RevenueCat Subscription Events (Using Email as ID).
     """
-    # 1. Extract raw JSON payload
     try:
         payload = await request.json()
     except Exception:
@@ -39,48 +38,44 @@ async def app_subscription_webhook(
     print(f"PAYLOAD DATA: {payload}")
     print("="*50 + "\n")
 
-    # 2. SECURITY CHECK
-    # RevenueCat lets developers set custom headers. We will check both our custom one
-    # and the standard Authorization Bearer token they usually use.
+    # 1. SECURITY CHECK
     secret_provided = x_webhook_secret or (authorization.replace("Bearer ", "") if authorization else None)
     
     if secret_provided != settings.APP_WEBHOOK_SECRET:
         print(f"❌ FAILED: Invalid Webhook Secret! Received: {secret_provided}")
         return standard_response(401, "Unauthorized: Invalid Webhook Secret")
 
-    # 3. Parse RevenueCat Event Data
+    # 2. Parse RevenueCat Event Data
     event = payload.get("event", {})
     if not event:
         return standard_response(400, "No event data found in payload")
 
-    rc_event_type = event.get("type") # e.g., INITIAL_PURCHASE, RENEWAL, CANCELLATION, EXPIRATION
-    app_user_id = event.get("app_user_id") # The user's ID
-    product_id = event.get("product_id", "unknown") # e.g., monthly_plan
+    rc_event_type = event.get("type") 
+    app_user_email = event.get("app_user_id") # <-- THIS IS NOW THE EMAIL
+    product_id = event.get("product_id", "unknown") 
     price = event.get("price", 0.0)
-    store = event.get("store", "Unknown") # APP_STORE, PLAY_STORE
+    store = event.get("store", "Unknown") 
 
-    if not app_user_id or not app_user_id.isdigit():
-        print(f"❌ FAILED: Invalid app_user_id: {app_user_id}")
-        # Return 200 so RevenueCat stops retrying, but we log the failure
-        return standard_response(200, "Ignored: Invalid or missing app_user_id")
+    if not app_user_email:
+        print("❌ FAILED: Missing app_user_id (Email)")
+        return standard_response(200, "Ignored: Missing app_user_id")
 
-    # 4. Find the user
-    result = await db.execute(select(models.User).filter(models.User.id == int(app_user_id)))
+    # 3. FIND THE USER BY EMAIL
+    # We use .ilike() for case-insensitive matching just to be safe!
+    result = await db.execute(select(models.User).filter(models.User.email.ilike(app_user_email)))
     user = result.scalars().first()
 
     if not user:
-        print(f"❌ FAILED: User ID {app_user_id} not found in database.")
-        return standard_response(200, "Ignored: User not found")
+        print(f"❌ FAILED: User email '{app_user_email}' not found in database.")
+        return standard_response(200, f"Ignored: User {app_user_email} not found")
 
-    # 5. Handle the RevenueCat Event
+    # 4. Handle the RevenueCat Event
     message = ""
-    # Map their product ID to our internal plans
     plan = "annual" if "annual" in product_id.lower() or "year" in product_id.lower() else "monthly"
 
-    if rc_event_type in["INITIAL_PURCHASE", "RENEWAL", "UNCANCELLATION"]:
+    if rc_event_type in ["INITIAL_PURCHASE", "RENEWAL", "UNCANCELLATION"]:
         user.subscription_plan = plan
         
-        # Log the transaction
         new_transaction = models.Transaction(
             user_id=user.id,
             amount=float(price),
@@ -88,20 +83,19 @@ async def app_subscription_webhook(
             status="Completed"
         )
         db.add(new_transaction)
-        message = f"User {user.id} upgraded to {plan} via RevenueCat"
+        message = f"User {user.email} upgraded to {plan} via RevenueCat"
         print(f"✅ SUCCESS: {message}")
 
-    elif rc_event_type in["CANCELLATION", "EXPIRATION"]:
+    elif rc_event_type in ["CANCELLATION", "EXPIRATION"]:
         user.subscription_plan = "free"
-        message = f"User {user.id} subscription downgraded to free via RevenueCat"
+        message = f"User {user.email} subscription downgraded to free via RevenueCat"
         print(f"✅ SUCCESS: {message}")
         
     else:
         message = f"Ignored RevenueCat event type: {rc_event_type}"
         print(f"⚠️ {message}")
 
-    # 6. Save to Database
+    # 5. Save to Database
     await db.commit()
     
-    # Return 200 OK so RevenueCat marks the webhook as delivered successfully
     return standard_response(200, message)
