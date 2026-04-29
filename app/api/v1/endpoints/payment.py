@@ -6,7 +6,8 @@ from sqlalchemy import select
 from app import models
 from app.core.config import settings
 from app.db.session import get_db
-from app.schemas.payment import AppSubscriptionWebhook 
+from app.schemas.payment import AppSubscriptionWebhook
+from fastapi import Request  
 
 router = APIRouter()
 
@@ -19,66 +20,88 @@ def standard_response(status_code: int, message: str, data: dict = None, status:
 
 @router.post("/webhooks/app-subscription")
 async def app_subscription_webhook(
-    payload: AppSubscriptionWebhook,
+    request: Request, # Accept the raw request to bypass strict schema validation
     x_webhook_secret: str = Header(None), 
+    authorization: str = Header(None), # RevenueCat often uses the Authorization header
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Secure Webhook for the Mobile App to update user subscription status.
+    Secure Webhook to process RevenueCat Subscription Events.
     """
-    # ==============================================================
-    # --- PRINT THE INCOMING DATA TO THE TERMINAL/RENDER LOGS ---
-    # ==============================================================
+    # 1. Extract raw JSON payload
+    try:
+        payload = await request.json()
+    except Exception:
+        return standard_response(400, "Invalid JSON payload")
+
     print("\n" + "="*50)
-    print("🚨 INCOMING SUBSCRIPTION WEBHOOK 🚨")
-    print(f"SECRET PROVIDED: {x_webhook_secret}")
-    print(f"PAYLOAD DATA: {payload.dict()}")
+    print("🚨 INCOMING REVENUECAT WEBHOOK 🚨")
+    print(f"PAYLOAD DATA: {payload}")
     print("="*50 + "\n")
 
-    # 1. SECURITY CHECK: Verify the secret key matches
-    if x_webhook_secret != settings.APP_WEBHOOK_SECRET:
-        print("FAILED: Invalid Webhook Secret!")
+    # 2. SECURITY CHECK
+    # RevenueCat lets developers set custom headers. We will check both our custom one
+    # and the standard Authorization Bearer token they usually use.
+    secret_provided = x_webhook_secret or (authorization.replace("Bearer ", "") if authorization else None)
+    
+    if secret_provided != settings.APP_WEBHOOK_SECRET:
+        print(f"❌ FAILED: Invalid Webhook Secret! Received: {secret_provided}")
         return standard_response(401, "Unauthorized: Invalid Webhook Secret")
 
-    # 2. Find the user
-    result = await db.execute(select(models.User).filter(models.User.id == payload.user_id))
+    # 3. Parse RevenueCat Event Data
+    event = payload.get("event", {})
+    if not event:
+        return standard_response(400, "No event data found in payload")
+
+    rc_event_type = event.get("type") # e.g., INITIAL_PURCHASE, RENEWAL, CANCELLATION, EXPIRATION
+    app_user_id = event.get("app_user_id") # The user's ID
+    product_id = event.get("product_id", "unknown") # e.g., monthly_plan
+    price = event.get("price", 0.0)
+    store = event.get("store", "Unknown") # APP_STORE, PLAY_STORE
+
+    if not app_user_id or not app_user_id.isdigit():
+        print(f"❌ FAILED: Invalid app_user_id: {app_user_id}")
+        # Return 200 so RevenueCat stops retrying, but we log the failure
+        return standard_response(200, "Ignored: Invalid or missing app_user_id")
+
+    # 4. Find the user
+    result = await db.execute(select(models.User).filter(models.User.id == int(app_user_id)))
     user = result.scalars().first()
 
     if not user:
-        print(f"FAILED: User ID {payload.user_id} not found in database.")
-        return standard_response(404, "User not found")
+        print(f"❌ FAILED: User ID {app_user_id} not found in database.")
+        return standard_response(200, "Ignored: User not found")
 
-    # 3. Handle the Event
-    event = payload.event_type.lower()
-    plan = payload.plan_name.lower()
+    # 5. Handle the RevenueCat Event
+    message = ""
+    # Map their product ID to our internal plans
+    plan = "annual" if "annual" in product_id.lower() or "year" in product_id.lower() else "monthly"
 
-    if event in ["purchase", "renewal"]:
-        # Upgrade the user
+    if rc_event_type in["INITIAL_PURCHASE", "RENEWAL", "UNCANCELLATION"]:
         user.subscription_plan = plan
         
         # Log the transaction
         new_transaction = models.Transaction(
             user_id=user.id,
-            amount=payload.amount,
-            provider=payload.provider,
+            amount=float(price),
+            provider=f"RevenueCat ({store})",
             status="Completed"
         )
         db.add(new_transaction)
-        message = f"User {user.id} upgraded to {plan}"
-        print(f"SUCCESS: {message}")
+        message = f"User {user.id} upgraded to {plan} via RevenueCat"
+        print(f"✅ SUCCESS: {message}")
 
-    elif event == "cancellation":
-        # Downgrade the user back to free
+    elif rc_event_type in["CANCELLATION", "EXPIRATION"]:
         user.subscription_plan = "free"
-        message = f"User {user.id} subscription cancelled"
-        print(f"SUCCESS: {message}")
+        message = f"User {user.id} subscription downgraded to free via RevenueCat"
+        print(f"✅ SUCCESS: {message}")
         
     else:
-        print(f"FAILED: Unknown event_type '{event}'")
-        return standard_response(400, f"Unknown event_type: {event}")
+        message = f"Ignored RevenueCat event type: {rc_event_type}"
+        print(f"⚠️ {message}")
 
-    # 4. Save to Database
+    # 6. Save to Database
     await db.commit()
     
-    # Return a 200 OK so the App Developer knows it succeeded
+    # Return 200 OK so RevenueCat marks the webhook as delivered successfully
     return standard_response(200, message)
