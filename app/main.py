@@ -13,6 +13,8 @@ app = FastAPI(
 app.mount("/static", StaticFiles(directory="static"), name="static")
 origins = [
     "http://localhost",
+    "https://qandelshield-admin.onrender.com/",
+    "https://qandelshield-admin.onrender.com",
     "http://localhost:3000",
     "http://10.10.12.59:5173",
     "http://10.10.12.59:5173/",
